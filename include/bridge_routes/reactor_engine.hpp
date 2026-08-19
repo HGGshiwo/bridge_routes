@@ -9,6 +9,7 @@
 #include <boost/filesystem.hpp>
 #include <dk_auto_json.hpp>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -18,7 +19,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <functional>
 #include <yaml-cpp/yaml.h>
 
 const std::string ROSNODE_NAME = "bridge_routes";
@@ -29,11 +29,11 @@ struct AppContext {};
 #include "bridge_routes/events.hpp"
 #include "bridge_routes/state_diff_tracker.hpp"
 
-class MyReactorEngine : public dk::BaseEngine<AppContext, MyReactorEngine> {
+class ReactorEngine : public dk::BaseEngine<AppContext, ReactorEngine> {
 public:
   // 声明当前引擎关心的事件列表
   using AllowedEvents = std::tuple<dk::MqttConnectEvent>;
-  using MqttAdapter = dk::MqttClientAdapter<AppContext, MyReactorEngine>;
+  using MqttAdapter = dk::MqttClientAdapter<AppContext, ReactorEngine>;
   using BaseEngine::BaseEngine;
 
   std::shared_ptr<MqttAdapter> mqtt_adapter_;
@@ -43,7 +43,8 @@ public:
   std::vector<std::function<void()>> reconnect_callbacks_;
 
   void on_event(const dk::MqttConnectEvent &event, AppContext &ctx) {
-    if(!device_code_.has_value()) return;
+    if (!device_code_.has_value())
+      return;
     ROS_INFO("[BridgeRoutes] MQTT connected, publishing full states...");
     for (const auto &cb : reconnect_callbacks_) {
       cb();
@@ -78,6 +79,11 @@ public:
   void on_tick(double dt, AppContext &ctx) override {
     if (is_hz(1.0)) {
       setup_all_topic();
+    }
+
+    if (is_hz(0.5) && device_code_.has_value()) {
+      nlohmann::json j = nlohmann::json::parse("{}");
+      publish_mqtt_msg(j, "state", 0, false);
     }
   }
 
@@ -148,9 +154,10 @@ public:
       for (auto it = namespace_params.begin(); it != namespace_params.end();
            ++it) {
         std::string key = it->first;
-        
+
         // device_code本身不作为配置项
-        if(key == "device_code") continue;
+        if (key == "device_code")
+          continue;
 
         if (task_set_.find(key) != task_set_.end())
           continue;
@@ -181,10 +188,10 @@ public:
 
           if (topic_type == "pub") {
             register_mqtt_pub(ros_topic.value(), mqtt_topic, qos.value_or(0),
-                               retain.value_or(false), false);
+                              retain.value_or(false), false);
           } else if (topic_type == "pub_state") {
             register_mqtt_pub(ros_topic.value(), mqtt_topic, qos.value_or(0),
-                               retain.value_or(false), true);
+                              retain.value_or(false), true);
           } else if (topic_type == "sub") {
             register_mqtt_sub(ros_topic.value(), mqtt_topic, qos.value_or(0));
           }
@@ -242,12 +249,13 @@ public:
       tracker = std::make_shared<StateDiffTracker>();
 
       // 注册一个发布全量状态的闭包回调
-      reconnect_callbacks_.push_back([this, mqtt_topic, qos, retain, tracker]() {
-        nlohmann::json last_state = tracker->get_last_state();
-        if (!last_state.empty()) {
-          publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
-        }
-      });
+      reconnect_callbacks_.push_back(
+          [this, mqtt_topic, qos, retain, tracker]() {
+            nlohmann::json last_state = tracker->get_last_state();
+            if (!last_state.empty()) {
+              publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
+            }
+          });
     }
 
     auto sub = nh_.subscribe<std_msgs::String>(
@@ -259,7 +267,8 @@ public:
             if (!parse_ros_msg(ros_topic, msg->data, current_json)) {
               return;
             }
-            nlohmann::json diff_json = tracker->update_and_get_diff(current_json);
+            nlohmann::json diff_json =
+                tracker->update_and_get_diff(current_json);
             if (diff_json.empty()) {
               return; // 没有改变，跳过发布
             }
@@ -307,7 +316,6 @@ public:
         fmt::format("device/{}/{}", device_code_.value(), mqtt_topic),
         data.dump(), qos, retain);
   }
-
 
   // 持久化参数
   template <typename T>

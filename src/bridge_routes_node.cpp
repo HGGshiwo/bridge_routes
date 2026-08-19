@@ -1,16 +1,16 @@
-#include "bridge_routes/my_reactor_engine.hpp"
+#include "bridge_routes/reactor_engine.hpp"
 
 class BridgeRoutesNode {
 
   ros::NodeHandle nh_;
   boost::asio::io_context ioc_;
-  std::shared_ptr<MyReactorEngine> engine_;
+  std::shared_ptr<ReactorEngine> engine_;
   std::thread asio_thread_;
 
 public:
   BridgeRoutesNode() {
     auto time_provider = std::make_shared<dk::RosTimeProvider>(nh_, ioc_);
-    engine_ = std::make_shared<MyReactorEngine>(ioc_, time_provider);
+    engine_ = std::make_shared<ReactorEngine>(ioc_, time_provider);
     engine_->start(std::chrono::milliseconds(100));
 
     asio_thread_ = std::thread([this]() {
