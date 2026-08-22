@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
-    <arg name="mqtt_port" default="1883"/>
-    <arg name="mqtt_host" default="localhost" />
+    <arg name="mqtt_port" default="$(optenv MQTT_PORT 1883)"/>
+    <arg name="mqtt_host" default="$(optenv MQTT_HOST localhost)" />
 
     <node pkg="bridge_routes" type="bridge_routes_node" name="bridge_rotues_node" output="screen">
         <param name="mqtt_port" value="$(arg mqtt_port)"/>
