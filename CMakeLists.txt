@@ -10,6 +10,7 @@ include(FetchContent)
 
 FetchContent_Declare(paho_mqtt_cpp GIT_REPOSITORY https://github.com/eclipse/paho.mqtt.cpp.git GIT_TAG v1.3.2 GIT_SHALLOW TRUE)
 FetchContent_Declare(yaml-cpp GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG 0.8.0 GIT_SHALLOW TRUE)
+FetchContent_Declare(dk GIT_REPOSITORY https://github.com/HGGshiwo/dk.git GIT_TAG main GIT_SHALLOW TRUE)
 
 set(PAHO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(PAHO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -28,16 +29,14 @@ set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "Disable yaml-cpp tools" FORCE)
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "Disable yaml-cpp contrib" FORCE)
 
 
-FetchContent_MakeAvailable(paho_mqtt_cpp yaml-cpp)
+FetchContent_MakeAvailable(paho_mqtt_cpp yaml-cpp dk)
 
-add_subdirectory(dk)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 dk_create_json_library(my_json_lib "${CMAKE_CURRENT_SOURCE_DIR}")
 
 find_package(catkin REQUIRED COMPONENTS 
     roscpp
     roslib
-    rsos_msgs
     message_generation
 )
 
@@ -52,7 +51,7 @@ generate_messages(
 )
 
 catkin_package(
-    CATKIN_DEPENDS roscpp rsos_msgs message_runtime
+    CATKIN_DEPENDS roscpp message_runtime
 )
 
 
