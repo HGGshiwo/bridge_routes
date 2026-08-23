@@ -1,5 +1,6 @@
 #include "dk/RosTimeProvider.hpp"
 #include "dk/adapters/mqtt.hpp"
+#include "dk/adapters/web.hpp"
 #include "dk/engine.hpp"
 #include "nlohmann/json_fwd.hpp"
 #include "ros/node_handle.h"
@@ -7,6 +8,8 @@
 #include "ros/subscriber.h"
 #include "std_msgs/String.h"
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <bridge_routes/StringSrv.h>
 #include <dk_auto_json.hpp>
 #include <exception>
 #include <functional>
@@ -22,7 +25,6 @@
 #include <yaml-cpp/yaml.h>
 
 const std::string ROSNODE_NAME = "bridge_routes";
-namespace fs = std::filesystem;
 
 struct AppContext {};
 
@@ -32,15 +34,21 @@ struct AppContext {};
 class ReactorEngine : public dk::BaseEngine<AppContext, ReactorEngine> {
 public:
   // 声明当前引擎关心的事件列表
-  using AllowedEvents = std::tuple<dk::MqttConnectEvent>;
+  using AllowedEvents = std::tuple<dk::MqttConnectEvent, dk::WsOpenEvent>;
   using MqttAdapter = dk::MqttClientAdapter<AppContext, ReactorEngine>;
+  using WebAdapter = dk::WebAdapter<AppContext, ReactorEngine>;
   using BaseEngine::BaseEngine;
 
   std::shared_ptr<MqttAdapter> mqtt_adapter_;
+  std::shared_ptr<WebAdapter> web_adapter_;
   std::map<std::string, ros::Publisher> ros_pub_;
   std::map<std::string, ros::Subscriber> ros_sub_;
 
   std::vector<std::function<void()>> reconnect_callbacks_;
+
+  std::map<std::string, std::function<void(std::shared_ptr<dk::WsConnection>)>>
+      ws_open_callbacks_;
+  std::mutex ws_open_callbacks_mutex_;
 
   void on_event(const dk::MqttConnectEvent &event, AppContext &ctx) {
     if (!device_code_.has_value())
@@ -51,28 +59,47 @@ public:
     }
   }
 
+  void on_event(const dk::WsOpenEvent &event, AppContext &ctx) {
+    ROS_INFO_STREAM("[BridgeRoutes] WebSocket connection established on path: "
+                    << event.path);
+    std::lock_guard<std::mutex> lock(ws_open_callbacks_mutex_);
+    auto it = ws_open_callbacks_.find(event.path);
+    if (it != ws_open_callbacks_.end()) {
+      it->second(event.conn);
+    }
+  }
+
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_{"~"};
   std::optional<std::string> device_code_;
+  fs::path target_file_;
 
   // 已经注册的task名称
   std::set<std::string> task_set_;
 
   // 启动的回调函数
   void on_start() override {
+    std::string str = ros::package::getPath(ROSNODE_NAME);
+    fs::path p(str); // 直接构造
+    target_file_ = p / "config" / "device_code.yaml";
+
     std::string mqtt_host =
         private_nh_.param("mqtt_host", std::string("localhost"));
     unsigned short mqtt_port = private_nh_.param("mqtt_port", 1883);
-    std::string device_code_str;
-    if (private_nh_.getParam("device_code", device_code_str)) {
-      device_code_ = device_code_str;
-    }
+
+    // 尝试加载device_code
+    load_param();
 
     mqtt_adapter_ =
         std::make_shared<MqttAdapter>(shared_from_this(), mqtt_host, mqtt_port);
     ROS_INFO_STREAM("[BridgeRoutes] mqtt start at " << mqtt_host << ":"
                                                     << mqtt_port);
     setup_mqtt();
+
+    int web_port = private_nh_.param("web_port", 8000);
+    web_adapter_ = std::make_shared<WebAdapter>(
+        shared_from_this(), static_cast<unsigned short>(web_port));
+    ROS_INFO_STREAM("[BridgeRoutes] web start at port " << web_port);
   }
 
   // 1hz的回调函数
@@ -169,9 +196,13 @@ public:
         if (!protocal.has_value())
           continue;
 
-        auto topic_type = extract_param<std::string>(key, val, "topic_type");
-        if (!topic_type.has_value())
-          continue;
+        std::optional<std::string> topic_type;
+        if (protocal.value() != "http") {
+          auto type_opt = extract_param<std::string>(key, val, "topic_type");
+          if (!type_opt.has_value())
+            continue;
+          topic_type = type_opt;
+        }
 
         auto ros_topic = extract_param<std::string>(key, val, "ros_topic");
         if (!ros_topic.has_value())
@@ -186,15 +217,27 @@ public:
           auto retain = extract_param<bool>(key, val, "retain", false);
           auto mqtt_topic = remove_slash(remote_uri.value());
 
-          if (topic_type == "pub") {
+          if (topic_type.value() == "pub") {
             register_mqtt_pub(ros_topic.value(), mqtt_topic, qos.value_or(0),
                               retain.value_or(false), false);
-          } else if (topic_type == "pub_state") {
+          } else if (topic_type.value() == "pub_state") {
             register_mqtt_pub(ros_topic.value(), mqtt_topic, qos.value_or(0),
                               retain.value_or(false), true);
-          } else if (topic_type == "sub") {
+          } else if (topic_type.value() == "sub") {
             register_mqtt_sub(ros_topic.value(), mqtt_topic, qos.value_or(0));
           }
+        } else if (protocal.value() == "websocket" ||
+                   protocal.value() == "ws") {
+          auto ws_path = remove_slash(remote_uri.value());
+          if (topic_type.value() == "pub") {
+            register_ws_pub(ros_topic.value(), ws_path, false);
+          } else if (topic_type.value() == "pub_state") {
+            register_ws_pub(ros_topic.value(), ws_path, true);
+          } else if (topic_type.value() == "sub") {
+            register_ws_sub(ros_topic.value(), ws_path);
+          }
+        } else if (protocal.value() == "http") {
+          register_http_service_bridge(ros_topic.value(), remote_uri.value());
         }
       }
     }
@@ -317,16 +360,31 @@ public:
         data.dump(), qos, retain);
   }
 
+  void load_param() {
+    if (!fs::exists(target_file_))
+      return;
+    YAML::Node config = YAML::LoadFile(target_file_.string());
+    device_code_ =
+        config["device_code"].as<std::optional<std::string>>(std::nullopt);
+  }
+
   // 持久化参数
   template <typename T>
   void save_param(const std::string &param_name, T default_value) {
     T value = private_nh_.param(param_name, default_value);
-    std::string str = ros::package::getPath(ROSNODE_NAME);
-    fs::path p(str); // 直接构造
 
     YAML::Node root;
     root[param_name] = value;
-    std::ofstream fout(p / "config" / "device_code.yaml");
+
+    fs::create_directories(target_file_.parent_path());
+
+    // 打开/创建文件
+    std::ofstream fout(target_file_);
+    if (!fout.is_open()) {
+      ROS_ERROR_STREAM("Failed to open file: " << target_file_);
+      return;
+    }
+
     fout << root;
   }
 
@@ -336,5 +394,156 @@ public:
       str.erase(0, 1); // 从索引 0 开始，删除 1 个字符
     }
     return str;
+  }
+
+  void register_http_service_bridge(std::string ros_service,
+                                    std::string http_path) {
+    class HttpRosBridgeHandler : public dk::IProtocolHandler<WebAdapter> {
+      std::string ros_service_;
+      ReactorEngine *engine_;
+
+    public:
+      HttpRosBridgeHandler(std::string service, ReactorEngine *engine)
+          : ros_service_(std::move(service)), engine_(engine) {}
+
+      void handle(std::shared_ptr<dk::HttpSession<WebAdapter>> session,
+                  boost::beast::http::request<boost::beast::http::string_body>
+                      req) override {
+        try {
+          std::string req_str = req.body();
+
+          // Since ros::service::call is blocking, we offload it to a background
+          // thread to keep ASIO running.
+          std::thread([session, service_name = ros_service_, req_str,
+                       &ioc = engine_->get_ioc()]() {
+            bridge_routes::StringSrv srv;
+            srv.request.request = req_str;
+
+            if (ros::service::call(service_name, srv)) {
+              boost::asio::post(ioc,
+                                [session, resp_str = srv.response.response]() {
+                                  session->send_http_response(
+                                      boost::beast::http::status::ok, resp_str);
+                                });
+            } else {
+              boost::asio::post(ioc, [session]() {
+                session->send_http_response(
+                    boost::beast::http::status::internal_server_error,
+                    "{\"error\":\"ROS Service call failed\"}");
+              });
+            }
+          }).detach();
+        } catch (const std::exception &e) {
+          session->send_http_response(boost::beast::http::status::bad_request,
+                                      std::string("{\"error\":\"") + e.what() +
+                                          "\"}");
+        }
+      }
+    };
+
+    std::string route_path = "/" + remove_slash(http_path);
+    web_adapter_->register_handler(
+        boost::beast::http::verb::post, route_path,
+        std::make_shared<HttpRosBridgeHandler>(ros_service, this));
+    ROS_INFO_STREAM("[BridgeRoutes] HTTP ROS Service Bridge registered: POST "
+                    << route_path << " -> " << ros_service);
+  }
+
+  // 订阅websocket消息，转发到ros
+  void register_ws_sub(std::string ros_topic, std::string ws_path) {
+    auto it = ros_pub_.find(ros_topic);
+    if (it != ros_pub_.end()) {
+      ROS_ERROR_STREAM("[Websocket] rostopic " << ros_topic << " exists!");
+      return;
+    }
+
+    auto pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
+    ros_pub_[ros_topic] = pub;
+
+    std::string route_path = "/" + remove_slash(ws_path);
+    web_adapter_->register_managed_ws_route(
+        route_path,
+        [pub](std::shared_ptr<dk::WsConnection> conn, std::string msg) {
+          std_msgs::String ros_msg;
+          ros_msg.data = std::move(msg);
+          pub.publish(ros_msg);
+        });
+    ROS_INFO_STREAM("[Websocket] ws->ros: " << route_path << " -> "
+                                            << ros_topic);
+  }
+
+  // 订阅ros消息，转发到websocket
+  void register_ws_pub(std::string ros_topic, std::string ws_path,
+                       bool is_state) {
+    auto it = ros_sub_.find(ros_topic);
+    if (it != ros_sub_.end()) {
+      ROS_ERROR_STREAM("[Websocket] rostopic " << ros_topic << " exists!");
+      return;
+    }
+
+    std::string route_path = "/" + remove_slash(ws_path);
+    std::shared_ptr<StateDiffTracker> tracker;
+    if (is_state) {
+      tracker = std::make_shared<StateDiffTracker>();
+
+      std::lock_guard<std::mutex> lock(ws_open_callbacks_mutex_);
+      ws_open_callbacks_[route_path] =
+          [this, route_path, tracker](std::shared_ptr<dk::WsConnection> conn) {
+            nlohmann::json last_state = tracker->get_last_state();
+            if (!last_state.empty()) {
+              last_state["deviceCode"] = device_code_.value_or("");
+              last_state["timestamp"] =
+                  (uint64_t)(get_time_provider()->now() * 1000);
+              conn->send_state(route_path, last_state);
+            }
+          };
+    }
+
+    // Register a dummy route to accept connections if not registered yet
+    web_adapter_->register_managed_ws_route(
+        route_path,
+        [](std::shared_ptr<dk::WsConnection> conn, std::string msg) {
+          // Ignore client messages sent to pub path
+        });
+
+    auto sub = nh_.subscribe<std_msgs::String>(
+        ros_topic, 1000,
+        [this, route_path, is_state, tracker,
+         ros_topic](const std_msgs::String::ConstPtr &msg) -> void {
+          if (is_state) {
+            nlohmann::json current_json;
+            if (!parse_ros_msg(ros_topic, msg->data, current_json)) {
+              return;
+            }
+            nlohmann::json diff_json =
+                tracker->update_and_get_diff(current_json);
+            if (diff_json.empty()) {
+              return; // no change, skip
+            }
+            diff_json["deviceCode"] = device_code_.value_or("");
+            diff_json["timestamp"] =
+                (uint64_t)(get_time_provider()->now() * 1000);
+            web_adapter_->publish_state_to_path(route_path, route_path,
+                                                diff_json);
+          } else {
+            try {
+              nlohmann::json j = nlohmann::json::parse(msg->data);
+              j["deviceCode"] = device_code_.value_or("");
+              j["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+              web_adapter_->publish_to_path(route_path, j);
+            } catch (...) {
+              nlohmann::json j;
+              j["data"] = msg->data;
+              j["deviceCode"] = device_code_.value_or("");
+              j["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+              web_adapter_->publish_to_path(route_path, j);
+            }
+          }
+        });
+
+    ros_sub_[ros_topic] = sub;
+    ROS_INFO_STREAM("[Websocket] ros[state=" << is_state << "]"
+                                             << "->ws: " << ros_topic << " -> "
+                                             << route_path);
   }
 };

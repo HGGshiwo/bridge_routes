@@ -65,3 +65,30 @@ launch注册方式
 	remote_uri: /task
 </rosparam>
 ```
+
+## WebSocket 桥接与 HTTP ROS 服务桥接
+
+本节点支持通过 `WebAdapter` 实现 WebSocket 桥接和 HTTP 转发 ROS 服务功能。
+
+### 1. WebSocket 桥接配置
+
+在配置文件/参数中，若 `protocol` 为 `ws` 或 `websocket`：
+*   **`topic_type` 为 `sub`**：订阅外部客户端发往 `remote_uri` 的 WebSocket 消息，并将其发布到指定的 `ros_topic` 中。
+*   **`topic_type` 为 `pub`**：订阅 `ros_topic`，当收到 ROS 消息时，将其以 JSON 形式广播给所有连接在 `/remote_uri` 上的 WebSocket 客户端。
+*   **`topic_type` 为 `pub_state`**：同上，但结合了差量传输机制（`StateDiffTracker`），并且会在新客户端连接时立即通过可靠传输（`send_state`）向其补发最新的全量状态。
+
+**端口配置**：通过私有参数 `web_port` 配置 Web 监听端口（默认值为 `8000`）。
+
+### 2. HTTP ROS 服务桥接
+
+本节点支持在 `rosparam` 中动态绑定外部 HTTP 路由与 ROS 服务，将外部 HTTP POST 请求转换为 ROS Service 调用，并将返回值作为 HTTP 响应返回。
+
+**配置示例**：
+若 `protocol` 为 `http`（`topic_type` 字段可选或被忽略）：
+*   **`ros_topic`**：目标 ROS 服务的名字（例如 `/camera/get_config`）。
+*   **`remote_uri`**：外部调用该服务的 HTTP 接口路径（例如 `/api/camera/config`）。
+
+**接口调用方式**：
+*   **接口地址**：`POST http://<host>:<web_port>/api/camera/config` (根据 `remote_uri` 自动注册路由)
+*   **请求 Body 格式**：直接发送业务原生的 JSON 报文（无需任何特殊外层包装）。
+*   **说明**：目标 ROS Service 必须为 [`bridge_routes/StringSrv`](file:///home/hggshiwo/catkin_ws/src/bridge_routes/srv/StringSrv.srv) 类型。当外部 HTTP POST 过来时，请求体的内容将直接作为 ROS Service 的 `request` 字段传入。我们在非阻塞后台线程中发起该 ROS 服务调用，调用成功后会将 Service 响应的 `response` 字段内容直接作为 HTTP 响应体返回给客户端。

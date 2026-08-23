@@ -38,10 +38,21 @@ find_package(catkin REQUIRED COMPONENTS
     roscpp
     roslib
     rsos_msgs
+    message_generation
+)
+
+add_service_files(
+    FILES
+    StringSrv.srv
+)
+
+generate_messages(
+    DEPENDENCIES
+    std_msgs
 )
 
 catkin_package(
-    CATKIN_DEPENDS roscpp rsos_msgs
+    CATKIN_DEPENDS roscpp rsos_msgs message_runtime
 )
 
 
@@ -53,6 +64,7 @@ include_directories(
 )
 
 add_executable(${PROJECT_NAME}_node src/bridge_routes_node.cpp)
+add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 target_link_libraries(${PROJECT_NAME}_node
     dk    
