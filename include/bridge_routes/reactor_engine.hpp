@@ -364,8 +364,11 @@ public:
     if (!fs::exists(target_file_))
       return;
     YAML::Node config = YAML::LoadFile(target_file_.string());
-    device_code_ =
-        config["device_code"].as<std::optional<std::string>>(std::nullopt);
+    if (config["device_code"] && config["device_code"].IsDefined() && !config["device_code"].IsNull()) {
+      device_code_ = config["device_code"].as<std::string>();
+    } else {
+      device_code_ = std::nullopt;
+    }
   }
 
   // 持久化参数
