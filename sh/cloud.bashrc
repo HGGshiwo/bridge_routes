@@ -1,0 +1,2 @@
+export MQTT_PORT=41883
+export MQTT_HOST=100.64.0.12

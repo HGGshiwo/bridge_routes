@@ -10,7 +10,7 @@ Before starting, open a terminal, set the necessary ROS parameters, and launch t
 
 ```bash
 # 1. 设置设备码（设为固定的 TEST_DEVICE）
-rosparam set /bridge_rotues/device_code "TEST_DEVICE"
+rosparam set /bridge_routes/device_code "TEST_DEVICE"
 
 # 2. 设置测试话题路由参数（pub, sub, pub_state）
 rosparam set /bridge_routes/test_pub "{protocol: mqtt, topic_type: pub, ros_topic: /test/pub, remote_uri: test_pub_topic}"

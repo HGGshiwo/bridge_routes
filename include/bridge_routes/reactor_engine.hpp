@@ -94,12 +94,13 @@ public:
         std::make_shared<MqttAdapter>(shared_from_this(), mqtt_host, mqtt_port);
     ROS_INFO_STREAM("[BridgeRoutes] mqtt start at " << mqtt_host << ":"
                                                     << mqtt_port);
-    setup_mqtt();
 
     int web_port = private_nh_.param("web_port", 8000);
     web_adapter_ = std::make_shared<WebAdapter>(
         shared_from_this(), static_cast<unsigned short>(web_port));
     ROS_INFO_STREAM("[BridgeRoutes] web start at port " << web_port);
+
+    setup_mqtt();
   }
 
   // 1hz的回调函数
@@ -130,7 +131,7 @@ public:
               setup_all_topic();
 
               private_nh_.setParam("device_code", device_code_.value());
-              save_param("device_code", std::string(""));
+              save_param("device_code", device_code_.value());
 
               ROS_INFO_STREAM(
                   "[Mqtt] register with code: " << device_code_.value());
@@ -156,9 +157,13 @@ public:
     T ret;
     try {
       ret = (T)val[key];
-    } catch (const std::exception_ptr &ex) {
-      ROS_ERROR_STREAM("[BridgeRoutes] " << parent_key << "convert " << key
-                                         << " failed!");
+    } catch (const std::exception &ex) {
+      ROS_ERROR_STREAM("[BridgeRoutes] " << parent_key << " convert " << key
+                                         << " failed: " << ex.what());
+      return std::nullopt;
+    } catch (...) {
+      ROS_ERROR_STREAM("[BridgeRoutes] " << parent_key << " convert " << key
+                                         << " failed with unknown exception!");
       return std::nullopt;
     }
     return ret;
@@ -182,9 +187,10 @@ public:
            ++it) {
         std::string key = it->first;
 
-        // device_code本身不作为配置项
-        if (key == "device_code")
+        // 过滤保留的系统/配置参数键名，避免将其作为路由配置解析
+        if (key == "device_code" || key == "mqtt_host" || key == "mqtt_port" || key == "web_port" || key == "web_host") {
           continue;
+        }
 
         if (task_set_.find(key) != task_set_.end())
           continue;
@@ -193,24 +199,32 @@ public:
         XmlRpc::XmlRpcValue &val = it->second;
 
         auto protocal = extract_param<std::string>(key, val, "protocol");
-        if (!protocal.has_value())
+        if (!protocal.has_value()) {
+          ROS_WARN_STREAM("[BridgeRoutes] Discarding invalid task '" << key << "': missing 'protocol'");
           continue;
+        }
 
         std::optional<std::string> topic_type;
         if (protocal.value() != "http") {
           auto type_opt = extract_param<std::string>(key, val, "topic_type");
-          if (!type_opt.has_value())
+          if (!type_opt.has_value()) {
+            ROS_WARN_STREAM("[BridgeRoutes] Discarding invalid task '" << key << "': missing 'topic_type'");
             continue;
+          }
           topic_type = type_opt;
         }
 
         auto ros_topic = extract_param<std::string>(key, val, "ros_topic");
-        if (!ros_topic.has_value())
+        if (!ros_topic.has_value() || ros_topic.value().empty()) {
+          ROS_WARN_STREAM("[BridgeRoutes] Discarding invalid task '" << key << "': 'ros_topic' is missing or empty");
           continue;
+        }
 
         auto remote_uri = extract_param<std::string>(key, val, "remote_uri");
-        if (!remote_uri.has_value())
+        if (!remote_uri.has_value() || remote_uri.value().empty()) {
+          ROS_WARN_STREAM("[BridgeRoutes] Discarding invalid task '" << key << "': 'remote_uri' is missing or empty");
           continue;
+        }
 
         if (protocal.value() == "mqtt") {
           auto qos = extract_param<int>(key, val, "qos", false);
@@ -373,11 +387,9 @@ public:
 
   // 持久化参数
   template <typename T>
-  void save_param(const std::string &param_name, T default_value) {
-    T value = private_nh_.param(param_name, default_value);
-
+  void save_param(const std::string &key, const T &value) {
     YAML::Node root;
-    root[param_name] = value;
+    root[key] = value;
 
     fs::create_directories(target_file_.parent_path());
 

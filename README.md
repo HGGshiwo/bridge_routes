@@ -36,7 +36,7 @@ bridge_routes:
 - 当topic_type=pub_state的时候，会将内容解析为一个json对象，并且尝试差量传输，并对number或者number数组类型的进行阈值过滤（阈值为0.01）
 - ros消息类型全部是std_msgs/String，数据格式为json （防止动态加载message类型，以及如何从message提取想要的数据）
 - gateway会1hz频率检查rosparam，如果是关键信息，发布前需要保证：`pub.getNumSubscribers() > 0`
-- 以下字符不能作为任务名称：device_code
+- 以下字符不能作为任务名称：device_code, mqtt_host, mqtt_port, web_port
 
 代码注册方式（将名为task的mqtt话题转发到/task/json的rostopic中：
 (如果是mqtt，会自动拼接`/device/deviceCode/{mqtt_topic}`，实际订阅的mqtt话题是/device/deviceCode/task)
@@ -70,14 +70,17 @@ launch注册方式
 
 本节点支持通过 `WebAdapter` 实现 WebSocket 桥接和 HTTP 转发 ROS 服务功能。
 
+**私有参数配置**：
+*   `mqtt_host`：MQTT 服务器地址（默认值：`localhost`）
+*   `mqtt_port`：MQTT 服务器端口（默认值：`1883`）
+*   `web_port`：Web 监听端口（默认值：`8000`）
+
 ### 1. WebSocket 桥接配置
 
 在配置文件/参数中，若 `protocol` 为 `ws` 或 `websocket`：
 *   **`topic_type` 为 `sub`**：订阅外部客户端发往 `remote_uri` 的 WebSocket 消息，并将其发布到指定的 `ros_topic` 中。
 *   **`topic_type` 为 `pub`**：订阅 `ros_topic`，当收到 ROS 消息时，将其以 JSON 形式广播给所有连接在 `/remote_uri` 上的 WebSocket 客户端。
 *   **`topic_type` 为 `pub_state`**：同上，但结合了差量传输机制（`StateDiffTracker`），并且会在新客户端连接时立即通过可靠传输（`send_state`）向其补发最新的全量状态。
-
-**端口配置**：通过私有参数 `web_port` 配置 Web 监听端口（默认值为 `8000`）。
 
 ### 2. HTTP ROS 服务桥接
 

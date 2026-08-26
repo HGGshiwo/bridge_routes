@@ -57,16 +57,7 @@ public:
       }
     }
 
-    // 移除当前 JSON 中不存在的键
-    std::vector<std::string> keys_to_remove;
-    for (auto it = last_state_.begin(); it != last_state_.end(); ++it) {
-      if (!current_json.contains(it.key())) {
-        keys_to_remove.push_back(it.key());
-      }
-    }
-    for (const auto &key : keys_to_remove) {
-      last_state_.erase(key);
-    }
+
 
     // 更新本地缓存
     for (auto it = diff_json.begin(); it != diff_json.end(); ++it) {

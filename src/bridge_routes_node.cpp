@@ -17,6 +17,7 @@ public:
       auto work_guard = boost::asio::make_work_guard(ioc_);
       ioc_.run();
     });
+    ROS_INFO("[BridgeRoutes] BridgeRoutesNode initialized and started successfully.");
   }
 
   ~BridgeRoutesNode() {

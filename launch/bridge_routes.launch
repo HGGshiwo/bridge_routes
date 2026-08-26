@@ -2,11 +2,11 @@
 <launch>
     <arg name="mqtt_port" default="$(optenv MQTT_PORT 1883)"/>
     <arg name="mqtt_host" default="$(optenv MQTT_HOST localhost)" />
-    <arg name="web_host" default="8000"/>
+    <arg name="web_port" default="8000"/>
 
     <node pkg="bridge_routes" type="bridge_routes_node" name="bridge_rotues_node" output="screen">
         <param name="mqtt_port" value="$(arg mqtt_port)"/>
         <param name="mqtt_host" value="$(arg mqtt_host)"/>
-        <param name="web_host" value="$(arg web_host)"/>
+        <param name="web_port" value="$(arg web_port)"/>
     </node>
 </launch>
